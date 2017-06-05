@@ -23,8 +23,14 @@
 # second run still detects an error.
 
 
+ATARI=
+case `uname -s` in
+	*MiNT*) ATARI="-A"
+	;;
+esac
+
 run_fsck () {
-	"../src/fsck.fat" "$@"
+	"../src/fsck.fat" $ATARI $ATARI "$@"
 }
 
 

@@ -75,6 +75,60 @@ void get_fat(FAT_ENTRY * entry, void *fat, uint32_t cluster, DOS_FS * fs)
     }
 }
 
+#ifdef __MINT__
+static char print_fat_dirty_state(void)
+{
+    printf("Dirty bit is set. Fs was not properly unmounted and"
+	   " some data may be corrupt.\n");
+
+    return get_choice(1, " Automatically removing dirty bit.",
+		      2,
+		      1, "Remove dirty bit",
+		      2, "No action");
+}
+
+static void check_fat_state_bit(DOS_FS * fs)
+{
+    FAT_ENTRY curEntry;
+    int dirty = 0;
+
+    if (!atari_format)
+    {
+        preen = 0;
+        return;
+    }
+    get_fat(&curEntry, fs->fat, 1, fs);
+    if (fs->fat_bits == 32) {
+        if ((curEntry.value & ClnShutBitMask32) == 0) {
+            dirty = 1;
+            curEntry.value |= ClnShutBitMask32;
+        }
+    } else if (fs->fat_bits == 16) {
+        if ((curEntry.value & ClnShutBitMask16) == 0) {
+            dirty = 1;
+            curEntry.value |= ClnShutBitMask16;
+        }
+    } else {
+        preen = 0;
+    }
+    if (dirty)
+    {
+        if (preen)
+        {
+            printf("Filesystem was dirty, cleared.\n");
+            set_fat(fs, 1, curEntry.value);
+            preen = 0;
+        } else if (print_fat_dirty_state() == 1) {
+            set_fat(fs, 1, curEntry.value);
+        }
+    } else if (preen)
+    {
+        printf("Filesystem is clean.\n");
+        preen = 0;
+    }
+}
+#endif
+
 /**
  * Build a bookkeeping structure from the partition's FAT table.
  * If the partition has multiple FATs and they don't agree, try to pick a winner,
@@ -156,24 +210,7 @@ void read_fat(DOS_FS * fs)
     memset(fs->cluster_owner, 0, (total_num_clusters * sizeof(DOS_FILE *)));
 
 #ifdef __MINT__
-    if (preen)
-    {
-        FAT_ENTRY curEntry;
-
-        get_fat(&curEntry, fs->fat, 1, fs);
-        switch (fs->fat_bits)
-        {
-        case 12:                                                /* Shouldn't happen */
-            preen = 0;
-            break;
-        case 16:
-            preen = (curEntry.value & ClnShutBitMask16) != 0;
-            break;
-        case 32:
-            preen = (curEntry.value & ClnShutBitMask32) != 0;
-            break;
-        }
-    }
+    check_fat_state_bit(fs);
     if (!preen)
 #endif
     {
@@ -221,13 +258,16 @@ void set_fat(DOS_FS * fs, uint32_t cluster, int32_t new)
 		(unsigned long)cluster, (unsigned long)(fs->data_clusters + 1));
     }
 
-    if (new == -1)
-	new = FAT_EOF(fs);
-    else if ((long)new == -2)
-	new = FAT_BAD(fs);
-    else if (new > fs->data_clusters + 1) {
-	die("Internal error: new cluster out of range in set_fat() (%lu > %lu).",
-		(unsigned long)new, (unsigned long)(fs->data_clusters + 1));
+    if (cluster != 1)
+    {
+        if (new == -1)
+            new = FAT_EOF(fs);
+        else if ((long)new == -2)
+            new = FAT_BAD(fs);
+        else if (new > fs->data_clusters + 1) {
+            die("Internal error: new cluster out of range in set_fat() (%lu > %lu).",
+                (unsigned long)new, (unsigned long)(fs->data_clusters + 1));
+        }
     }
 
     switch (fs->fat_bits) {
