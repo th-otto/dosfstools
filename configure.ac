@@ -48,6 +48,13 @@ AC_PROG_CC
 AC_PROG_LN_S
 
 AC_SYS_LARGEFILE
+case $host in
+  *-mint*)
+	AC_DEFINE(_LARGEFILE_SOURCE, 1, [])
+	AC_DEFINE(_LARGEFILE64_SOURCE, 1, [])
+	AC_DEFINE(_FILE_OFFSET_BITS, 64, [])
+	;;
+esac
 
 AC_CHECK_HEADERS([\
 		  err.h \

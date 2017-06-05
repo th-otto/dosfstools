@@ -184,3 +184,11 @@ int fs_changed(void)
 {
     return ! !changes || did_change;
 }
+
+
+#ifdef __MINT__
+int fs_type(void)
+{
+	return gettype(fd);
+}
+#endif

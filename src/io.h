@@ -60,4 +60,16 @@ int fs_changed(void);
 
 /* Determines whether the filesystem has changed. See fs_close. */
 
+#ifdef __MINT__
+int fs_type(void);
+int gettype(int fd);
+
+#ifdef __USE_LARGEFILE64
+extern __off64_t lseek64 (int __fd, __off64_t __offset, int __whence)
+     __THROW;
+#define lseek(fd, offset, whence) lseek64(fd, (__off64_t)(offset), whence)
+#endif
+
+#endif
+
 #endif

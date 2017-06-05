@@ -23,7 +23,7 @@ noinst_PROGRAMS = testdevinfo
 fscklabel_common_sources = boot.c boot.h check.c check.h common.c common.h \
 			   fat.c fat.h file.c file.h io.c io.h lfn.c lfn.h \
 			   charconv.c charconv.h msdos_fs.h \
-			   fsck.fat.h endian_compat.h
+			   fsck.fat.h endian_compat.h mint_io.c mint_io.h
 fsck_fat_SOURCES = fsck.fat.c $(fscklabel_common_sources)
 fatlabel_SOURCES = fatlabel.c $(fscklabel_common_sources)
 

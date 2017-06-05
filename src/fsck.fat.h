@@ -40,6 +40,12 @@
 
 #define FAT_STATE_DIRTY 0x01
 
+#define ClnShutBitMask16 0x8000
+#define HrdErrBitMask    0x4000
+
+#define ClnShutBitMask32 0x08000000UL
+#define HrdErrBitMask32  0x04000000UL
+
 /* ++roman: Use own definition of boot sector structure -- the kernel headers'
  * name for it is msdos_boot_sector in 2.0 and fat_boot_sector in 2.1 ... */
 struct boot_sector {

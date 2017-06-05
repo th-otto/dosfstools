@@ -26,6 +26,11 @@
 extern int interactive;
 extern int write_immed;
 extern int atari_format;	/* Use Atari variation of MS-DOS FS format */
+#ifdef __MINT__
+extern int preen;
+#else
+#define preen 0
+#endif
 
 /* program_name used for printing messages; no name will be printed when it is
  * left as NULL */

@@ -3,6 +3,9 @@
 
 #if defined(HAVE_ENDIAN_H)
 #include <endian.h>
+#ifdef __MINT__
+#include "bswap.h"
+#endif
 #elif defined(HAVE_SYS_ENDIAN_H)
 #include <sys/endian.h>
 #elif defined(HAVE_LIBKERN_OSBYTEORDER_H)

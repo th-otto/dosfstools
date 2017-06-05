@@ -35,6 +35,9 @@
 
 
 int interactive;
+#ifdef __MINT__
+int preen;
+#endif
 int write_immed;
 int atari_format;
 const char *program_name;
@@ -267,6 +270,9 @@ char *get_line(const char *prompt, char *dest, size_t length)
  */
 void check_atari(void)
 {
+#ifdef __MINT__
+    atari_format = -1;
+#else
 #if defined(__mc68000__) && defined(__linux__) && defined(CONF_CHECK_ATARI)
     FILE *f;
     char line[128], *p;
@@ -286,5 +292,6 @@ void check_atari(void)
 	}
     }
     fclose(f);
+#endif
 #endif
 }

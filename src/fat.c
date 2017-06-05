@@ -155,6 +155,28 @@ void read_fat(DOS_FS * fs)
     fs->cluster_owner = alloc(total_num_clusters * sizeof(DOS_FILE *));
     memset(fs->cluster_owner, 0, (total_num_clusters * sizeof(DOS_FILE *)));
 
+#ifdef __MINT__
+    if (preen)
+    {
+        FAT_ENTRY curEntry;
+
+        get_fat(&curEntry, fs->fat, 1, fs);
+        switch (fs->fat_bits)
+        {
+        case 12:                                                /* Shouldn't happen */
+            preen = 0;
+            break;
+        case 16:
+            preen = (curEntry.value & ClnShutBitMask16) != 0;
+            break;
+        case 32:
+            preen = (curEntry.value & ClnShutBitMask32) != 0;
+            break;
+        }
+    }
+    if (!preen)
+#endif
+    {
     /* Truncate any cluster chains that link to something out of range */
     for (i = 2; i < fs->data_clusters + 2; i++) {
 	FAT_ENTRY curEntry;
@@ -171,6 +193,7 @@ void read_fat(DOS_FS * fs)
 		   (long)(fs->data_clusters + 2 - 1));
 	    set_fat(fs, i, -1);
 	}
+    }
     }
 }
 
