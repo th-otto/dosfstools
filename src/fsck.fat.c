@@ -44,6 +44,7 @@
 #include "charconv.h"
 
 int rw = 0, list = 0, test = 0, verbose = 0;
+int no_spaces_in_sfns = 0;
 int boot_only = 0;
 unsigned n_files = 0;
 void *mem_queue = NULL;
@@ -61,29 +62,36 @@ static void usage(char *name, int exitval)
 {
     fprintf(stderr, "usage: %s [OPTIONS] DEVICE\n", name);
     fprintf(stderr, "  -a       automatically repair the filesystem\n");
+    fprintf(stderr, "Usage: %s [OPTIONS] DEVICE\n", name);
+    fprintf(stderr, "Check FAT filesystem on DEVICE for errors.\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -a              automatically repair the filesystem\n");
 #ifdef __MINT__
-    fprintf(stderr, "  -A       force DOS filesystem format\n");
-    fprintf(stderr, "  -AA      force Atari filesystem format\n");
+    fprintf(stderr, "  -A              force DOS filesystem format\n");
+    fprintf(stderr, "  -AA             force Atari filesystem format\n");
 #else
-    fprintf(stderr, "  -A       toggle Atari filesystem format\n");
+    fprintf(stderr, "  -A              toggle Atari variant of the FAT filesystem\n");
 #endif
-    fprintf(stderr, "  -b       make read-only boot sector check\n");
-    fprintf(stderr, "  -c N     use DOS codepage N to decode short file names (default: %d)\n",
+    fprintf(stderr, "  -b              make read-only boot sector check\n");
+    fprintf(stderr, "  -c N            use DOS codepage N to decode short file names (default: %d)\n",
 	    DEFAULT_DOS_CODEPAGE);
-    fprintf(stderr, "  -d PATH  drop file with name PATH (can be given multiple times)\n");
-    fprintf(stderr, "  -f       salvage unused chains to files\n");
-    fprintf(stderr, "  -l       list path names\n");
-    fprintf(stderr, "  -n       no-op, check non-interactively without changing\n");
-    fprintf(stderr, "  -p       same as -a, for compat with other *fsck\n");
-    fprintf(stderr, "  -r       interactively repair the filesystem (default)\n");
-    fprintf(stderr, "  -t       test for bad clusters\n");
-    fprintf(stderr, "  -u PATH  try to undelete (non-directory) file that was named PATH (can be\n");
-    fprintf(stderr, "             given multiple times)\n");
-    fprintf(stderr, "  -v       verbose mode\n");
-    fprintf(stderr, "  -V       perform a verification pass\n");
-    fprintf(stderr, "  -w       write changes to disk immediately\n");
-    fprintf(stderr, "  -y       same as -a, for compat with other *fsck\n");
-    fprintf(stderr, "  --help   print this message\n");
+    fprintf(stderr, "  -d PATH         drop file with name PATH (can be given multiple times)\n");
+    fprintf(stderr, "  -f              salvage unused chains to files\n");
+    fprintf(stderr, "  -l              list path names\n");
+    fprintf(stderr, "  -n              no-op, check non-interactively without changing\n");
+    fprintf(stderr, "  -p              same as -a, for compat with other *fsck\n");
+    fprintf(stderr, "  -r              interactively repair the filesystem (default)\n");
+    fprintf(stderr, "  -S              disallow spaces in the middle of short file names\n");
+    fprintf(stderr, "  -t              test for bad clusters\n");
+    fprintf(stderr, "  -u PATH         try to undelete (non-directory) file that was named PATH (can be\n");
+    fprintf(stderr, "                    given multiple times)\n");
+    fprintf(stderr, "  -v              verbose mode\n");
+    fprintf(stderr, "  -V              perform a verification pass\n");
+    fprintf(stderr, "  --variant=TYPE  handle variant TYPE of the filesystem\n");
+    fprintf(stderr, "  -w              write changes to disk immediately\n");
+    fprintf(stderr, "  -y              same as -a, for compat with other *fsck\n");
+    fprintf(stderr, "  --help          print this message\n");
     exit(exitval);
 }
 
@@ -94,9 +102,10 @@ int main(int argc, char **argv)
     uint32_t free_clusters = 0;
     struct termios tio;
 
-    enum {OPT_HELP=1000,};
+    enum {OPT_HELP=1000, OPT_VARIANT};
     const struct option long_options[] = {
-	    {"help", no_argument, NULL, OPT_HELP},
+	    {"variant", required_argument, NULL, OPT_VARIANT},
+	    {"help",    no_argument,       NULL, OPT_HELP},
 	    {0,}
     };
 
@@ -112,7 +121,7 @@ int main(int argc, char **argv)
     rw = interactive = 1;
     check_atari();
 
-    while ((c = getopt_long(argc, argv, "Aac:d:bflnprtu:vVwy",
+    while ((c = getopt_long(argc, argv, "Aac:d:bflnprStu:vVwy",
 				    long_options, NULL)) != -1)
 	switch (c) {
 	case 'A':		/* toggle Atari format */
@@ -159,6 +168,9 @@ int main(int argc, char **argv)
 	    rw = 1;
 	    interactive = 1;
 	    break;
+	case 'S':
+	    no_spaces_in_sfns = 1;
+	    break;
 	case 't':
 	    test = 1;
 	    break;
@@ -171,14 +183,29 @@ int main(int argc, char **argv)
 	case 'V':
 	    verify = 1;
 	    break;
+	case OPT_VARIANT:
+	    if (!strcasecmp(optarg, "standard")) {
+		    atari_format = 0;
+	    } else if (!strcasecmp(optarg, "atari")) {
+		    atari_format = 1;
+	    } else {
+		    fprintf(stderr, "Unknown variant: %s\n", optarg);
+		    usage(argv[0], 2);
+	    }
+	    break;
 	case 'w':
 	    write_immed = 1;
 	    break;
 	case OPT_HELP:
 	    usage(argv[0], 0);
 	    break;
-	default:
+	case '?':
 	    usage(argv[0], 2);
+	    break;
+	default:
+	    fprintf(stderr,
+		    "Internal error: getopt_long() returned unexpected value %d\n", c);
+	    exit(3);
 	}
     set_dos_codepage(-1);	/* set default codepage if none was given in command line */
     if ((test || write_immed) && !rw) {

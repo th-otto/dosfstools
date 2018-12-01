@@ -66,6 +66,7 @@
 #include "common.h"
 #include "msdos_fs.h"
 #include "device_info.h"
+#include "charconv.h"
 
 
 /* Constant definitions */
@@ -211,6 +212,8 @@ char dummy_boot_code[BOOTCODE_SIZE] = "\x0e"	/* push cs */
 
 #define MESSAGE_OFFSET 29	/* Offset of message in above code */
 
+static char initial_volume_name[] = NO_NAME; /* Initial volume name, make sure that is writable */
+
 /* Global variables - the root of all evil :-) - see these and weep! */
 
 static char *device_name = NULL;	/* Name of the device on which to create the filesystem */
@@ -218,7 +221,7 @@ static int check = FALSE;	/* Default to no readablity checking */
 static int verbose = 0;		/* Default to verbose mode off */
 static long volume_id;		/* Volume ID number */
 static time_t create_time;	/* Creation time */
-static char volume_name[] = NO_NAME;	/* Volume name */
+static char *volume_name = initial_volume_name;	/* Volume name */
 static uint64_t blocks;	/* Number of blocks in filesystem */
 static unsigned sector_size = 512;	/* Size of a logical sector */
 static int sector_size_set = 0;	/* User selected sector size */
@@ -243,6 +246,7 @@ static int size_root_dir;	/* Size of the root directory in bytes */
 static uint32_t num_sectors;		/* Total number of sectors in device */
 static int sectors_per_cluster = 0;	/* Number of sectors per disk cluster */
 static int root_dir_entries = 0;	/* Number of root directory entries */
+static int root_dir_entries_set = 0;	/* User selected root directory size */
 static char *blank_sector;	/* Blank sector - all zeros */
 static int hidden_sectors = 0;	/* Number of hidden sectors */
 static int hidden_sectors_by_user = 0;	/* -h option invoked */
@@ -620,6 +624,11 @@ static void setup_tables(void)
     struct tm *ctime;
     struct msdos_volume_info *vi =
 	(size_fat == 32 ? &bs.fat32.vi : &bs.oldfat.vi);
+    char label[12] = { 0 };
+    wchar_t wlabel[12] = { 0 };
+    size_t len;
+    int ret;
+    int i;
 
     if (atari_format) {
 	/* On Atari, the first few bytes of the boot sector are assigned
@@ -646,6 +655,8 @@ static void setup_tables(void)
     if (size_fat == 32) {
 	/* Under FAT32, the root dir is in a cluster chain, and this is
 	 * signalled by bs.dir_entries being 0. */
+	if (root_dir_entries_set)
+	    fprintf(stderr, "Warning: root directory entries specified with -r have no effect on FAT32\n");
 	root_dir_entries = 0;
     }
 
@@ -660,8 +671,36 @@ static void setup_tables(void)
 	vi->volume_id[3] = (unsigned char)(volume_id >> 24);
     }
 
+    len = mbstowcs(NULL, volume_name, 0);
+    if (len != (size_t)-1 && len > 11)
+	die("Label can be no longer than 11 characters");
+
+    if (mbstowcs(wlabel, volume_name, 12) == (size_t)-1)
+	pdie("Error when processing label");
+
+    if (!local_string_to_dos_string(label, volume_name, 12))
+	die("Error when processing label");
+
+    for (i = strlen(label); i < 11; ++i)
+	label[i] = ' ';
+    label[11] = 0;
+
+    if (memcmp(label, "           ", MSDOS_NAME) == 0)
+	memcpy(label, NO_NAME, MSDOS_NAME);
+
+    ret = validate_volume_label(wlabel, (unsigned char *)label);
+    if (ret & 0x1)
+	fprintf(stderr,
+		"mkfs.fat: Warning: lowercase labels might not work properly with DOS or Windows\n");
+    if (ret & 0x2)
+	die("Labels with characters below 0x20 are not allowed\n");
+    if (ret & 0x4)
+	die("Labels with characters *?.,;:/\\|+=<>[]\" are not allowed\n");
+    if (ret & 0x10)
+	die("Label can't start with a space character");
+
     if (!atari_format) {
-	memcpy(vi->volume_label, volume_name, 11);
+	memcpy(vi->volume_label, label, 11);
 
 	memcpy(bs.boot_jump, dummy_boot_jump, 3);
 	/* Patch in the correct offset to the boot code */
@@ -1086,7 +1125,7 @@ static void setup_tables(void)
 	}
 	printf("Volume ID is %08lx, ", volume_id &
 	       (atari_format ? 0x00ffffff : 0xffffffff));
-	if (strcmp(volume_name, NO_NAME))
+	if (memcmp(label, NO_NAME, MSDOS_NAME))
 	    printf("volume label %s.\n", volume_name);
 	else
 	    printf("no volume label.\n");
@@ -1125,9 +1164,11 @@ static void setup_tables(void)
     }
 
     memset(root_dir, 0, size_root_dir);
-    if (memcmp(volume_name, NO_NAME, MSDOS_NAME)) {
+    if (memcmp(label, NO_NAME, MSDOS_NAME)) {
 	struct msdos_dir_entry *de = &root_dir[0];
-	memcpy(de->name, volume_name, MSDOS_NAME);
+	memcpy(de->name, label, MSDOS_NAME);
+	if (de->name[0] == 0xe5)
+	    de->name[0] = 0x05;
 	de->attr = ATTR_VOLUME;
 	if (!invariant)
 		ctime = localtime(&create_time);
@@ -1252,17 +1293,39 @@ static void write_tables(void)
 
 /* Report the command usage and exit with the given error code */
 
-static void usage(int exitval)
+static void usage(const char *name, int exitval)
 {
-    fprintf(stderr, "\
-Usage: mkfs.fat [-a][-A][-c][-C][-v][-I][-l bad-block-file][-b backup-boot-sector]\n\
-       [-m boot-msg-file][-n volume-name][-i volume-id]\n\
-       [-s sectors-per-cluster][-S logical-sector-size][-f number-of-FATs]\n\
-       [-h hidden-sectors][-F fat-size][-r root-dir-entries][-R reserved-sectors]\n\
-       [-M FAT-media-byte][-D drive_number]\n\
-       [--invariant]\n\
-       [--help]\n\
-       /dev/name [blocks]\n");
+    fprintf(stderr, "Usage: %s [OPTIONS] TARGET [BLOCKS]\n", name);
+    fprintf(stderr, "Create FAT filesystem in TARGET, which can be a block device or file. Use only\n");
+    fprintf(stderr, "up to BLOCKS 1024 byte blocks if specified. With the -C option, file TARGET will be\n");
+    fprintf(stderr, "created with a size of 1024 bytes times BLOCKS, which must be specified.\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "Options:\n");
+    fprintf(stderr, "  -a              Disable alignment of data structures\n");
+    fprintf(stderr, "  -A              Toggle Atari variant of the filesystem\n");
+    fprintf(stderr, "  -b SECTOR       Select SECTOR as location of the FAT32 backup boot sector\n");
+    fprintf(stderr, "  -c              Check device for bad blocks before creating the filesystem\n");
+    fprintf(stderr, "  -C              Create file TARGET then create filesystem in it\n");
+    fprintf(stderr, "  -D NUMBER       Write BIOS drive number NUMBER to boot sector\n");
+    fprintf(stderr, "  -f COUNT        Create COUNT file allocation tables\n");
+    fprintf(stderr, "  -F SIZE         Select FAT size SIZE (12, 16 or 32)\n");
+    fprintf(stderr, "  -h COUNT        Reserve COUNT hidden sectors\n");
+    fprintf(stderr, "  -i VOLID        Set volume ID to VOLID (a 32 bit hexadecimal number)\n");
+    fprintf(stderr, "  -I              Disable safety checks\n");
+    fprintf(stderr, "  -l FILENAME     Read bad blocks list from FILENAME\n");
+    fprintf(stderr, "  -m FILENAME     Replace default error message in boot block with contents of FILENAME\n");
+    fprintf(stderr, "  -M TYPE         Set media type in boot sector to TYPE\n");
+    fprintf(stderr, "  -n LABEL        Set volume name to LABEL (up to 11 characters long)\n");
+    fprintf(stderr, "  --codepage=N    use DOS codepage N to encode label (default: %d)\n", DEFAULT_DOS_CODEPAGE);
+    fprintf(stderr, "  -r COUNT        Make room for COUNT entries in the root directory\n");
+    fprintf(stderr, "  -R COUNT        Set number of reserved sectors to COUNT\n");
+    fprintf(stderr, "  -s COUNT        Set number of sectors per cluster to COUNT\n");
+    fprintf(stderr, "  -S SIZE         Select a sector size of SIZE (a power of two, at least 512)\n");
+    fprintf(stderr, "  -v              Verbose execution\n");
+    fprintf(stderr, "  --variant=TYPE  Select variant TYPE of filesystem (standard or Atari)\n");
+    fprintf(stderr, "\n");
+    fprintf(stderr, "  --invariant     Use constants for randomly generated or time based values\n");
+    fprintf(stderr, "  --help          Show this help message and exit\n");
     exit(exitval);
 }
 
@@ -1282,10 +1345,12 @@ int main(int argc, char **argv)
     int blocks_specified = 0;
     struct timeval create_timeval;
 
-    enum {OPT_HELP=1000, OPT_INVARIANT,};
+    enum {OPT_HELP=1000, OPT_INVARIANT, OPT_VARIANT, OPT_CODEPAGE};
     const struct option long_options[] = {
-	    {"help", no_argument, NULL, OPT_HELP},
-	    {"invariant", no_argument, NULL, OPT_INVARIANT},
+	    {"codepage",  required_argument, NULL, OPT_CODEPAGE},
+	    {"invariant", no_argument,       NULL, OPT_INVARIANT},
+	    {"variant",   required_argument, NULL, OPT_VARIANT},
+	    {"help",      no_argument,       NULL, OPT_HELP},
 	    {0,}
     };
 
@@ -1299,7 +1364,7 @@ int main(int argc, char **argv)
 
     gettimeofday(&create_timeval, NULL);
     create_time = create_timeval.tv_sec;
-    volume_id = (uint32_t) ((create_timeval.tv_sec << 20) | create_timeval.tv_usec);	/* Default volume ID = creation time, fudged for more uniqueness */
+    volume_id = generate_volume_id();
     check_atari();
 
     printf("mkfs.fat " VERSION " (" VERSION_DATE ")\n");
@@ -1320,7 +1385,7 @@ int main(int argc, char **argv)
 	    backup_boot = (int)strtol(optarg, &tmp, 0);
 	    if (*tmp || backup_boot < 2 || backup_boot > 0xffff) {
 		printf("Bad location for backup boot sector : %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    break;
 
@@ -1337,7 +1402,7 @@ int main(int argc, char **argv)
 	    drive_number_option = (int) strtol (optarg, &tmp, 0);
 	    if (*tmp || (drive_number_option != 0 && drive_number_option != 0x80)) {
 		printf ("Drive number must be 0 or 0x80: %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    drive_number_by_user=1;
 	    break;
@@ -1346,7 +1411,7 @@ int main(int argc, char **argv)
 	    nr_fats = (int)strtol(optarg, &tmp, 0);
 	    if (*tmp || nr_fats < 1 || nr_fats > 4) {
 		printf("Bad number of FATs : %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    break;
 
@@ -1354,7 +1419,7 @@ int main(int argc, char **argv)
 	    size_fat = (int)strtol(optarg, &tmp, 0);
 	    if (*tmp || (size_fat != 12 && size_fat != 16 && size_fat != 32)) {
 		printf("Bad FAT type : %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    size_fat_by_user = 1;
 	    break;
@@ -1363,7 +1428,7 @@ int main(int argc, char **argv)
 	    hidden_sectors = (int)strtol(optarg, &tmp, 0);
 	    if (*tmp || hidden_sectors < 0) {
 		printf("Bad number of hidden sectors : %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    hidden_sectors_by_user = 1;
 	    break;
@@ -1376,7 +1441,7 @@ int main(int argc, char **argv)
 	    volume_id = strtoul(optarg, &tmp, 16);
 	    if (*tmp) {
 		printf("Volume ID must be a hexadecimal number\n");
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    break;
 
@@ -1449,39 +1514,36 @@ int main(int argc, char **argv)
 	    fat_media_byte = (int)strtol(optarg, &tmp, 0);
 	    if (*tmp) {
 		printf("Bad number for media descriptor : %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    if (fat_media_byte != 0xf0 && (fat_media_byte < 0xf8 || fat_media_byte > 0xff)) {
 		printf("FAT Media byte must either be between 0xF8 and 0xFF or be 0xF0 : %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    break;
 
 	case 'n':		/* n : Volume name */
-	    sprintf(volume_name, "%-11.11s", optarg);
-	    for (i = 0; volume_name[i] && i < 11; i++)
-		/* don't know if here should be more strict !uppercase(label[i]) */
-		if (islower(volume_name[i])) {
-		    fprintf(stderr,
-		            "mkfs.fat: warning - lowercase labels might not work properly with DOS or Windows\n");
-		    break;
-		}
+	    volume_name = optarg;
+	    break;
 
+	case OPT_CODEPAGE:	/* --codepage : Code page */
+	    set_dos_codepage(atoi(optarg));
 	    break;
 
 	case 'r':		/* r : Root directory entries */
 	    root_dir_entries = (int)strtol(optarg, &tmp, 0);
 	    if (*tmp || root_dir_entries < 16 || root_dir_entries > 32768) {
 		printf("Bad number of root directory entries : %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
+	    root_dir_entries_set = 1;
 	    break;
 
 	case 'R':		/* R : number of reserved sectors */
 	    reserved_sectors = (int)strtol(optarg, &tmp, 0);
 	    if (*tmp || reserved_sectors < 1 || reserved_sectors > 0xffff) {
 		printf("Bad number of reserved sectors : %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    break;
 
@@ -1494,7 +1556,7 @@ int main(int argc, char **argv)
 			 && sectors_per_cluster != 64
 			 && sectors_per_cluster != 128)) {
 		printf("Bad number of sectors per cluster : %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    break;
 
@@ -1505,7 +1567,7 @@ int main(int argc, char **argv)
 			 sector_size != 8192 && sector_size != 16384 &&
 			 sector_size != 32768)) {
 		printf("Bad logical sector size : %s\n", optarg);
-		usage(1);
+		usage(argv[0], 1);
 	    }
 	    sector_size_set = 1;
 	    break;
@@ -1515,7 +1577,7 @@ int main(int argc, char **argv)
 	    break;
 
 	case OPT_HELP:
-	    usage(0);
+	    usage(argv[0], 0);
 	    break;
 
 	case OPT_INVARIANT:
@@ -1524,14 +1586,32 @@ int main(int argc, char **argv)
 	    create_time = 1426325213;
 	    break;
 
+	case OPT_VARIANT:
+	    if (!strcasecmp(optarg, "standard")) {
+		    atari_format = 0;
+	    } else if (!strcasecmp(optarg, "atari")) {
+		    atari_format = 1;
+	    } else {
+		    printf("Unknown variant: %s\n", optarg);
+		    usage(argv[0], 1);
+	    }
+	    break;
+
+	case '?':
+	    usage(argv[0], 1);
+	    exit(1);
+
 	default:
-	    printf("Unknown option: %c\n", c);
-	    usage(1);
+	    fprintf(stderr,
+		    "Internal error: getopt_long() returned unexpected value %d\n", c);
+	    exit(2);
 	}
+
+    set_dos_codepage(-1);	/* set default codepage if none was given in command line */
 
     if (optind == argc || !argv[optind]) {
 	printf("No device specified.\n");
-	usage(1);
+	usage(argv[0], 1);
     }
 
     device_name = argv[optind++];
@@ -1542,7 +1622,7 @@ int main(int argc, char **argv)
 
 	if (*tmp) {
 	    printf("Bad block count : %s\n", argv[optind]);
-	    usage(1);
+	    usage(argv[0], 1);
 	}
 
 	optind++;
@@ -1550,7 +1630,7 @@ int main(int argc, char **argv)
 
     if (optind != argc) {
 	fprintf(stderr, "Excess arguments on command line\n");
-	usage(1);
+	usage(argv[0], 1);
     }
 
     if (create && !blocks_specified)

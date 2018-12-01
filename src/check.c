@@ -47,7 +47,7 @@ static DOS_FILE *root;
 /* get start field of a dir entry */
 #define FSTART(p,fs) \
   ((uint32_t)le16toh(p->dir_ent.start) | \
-   (fs->fat_bits == 32 ? le16toh(p->dir_ent.starthi) << 16 : 0))
+   (fs->fat_bits == 32 ? (uint32_t)le16toh(p->dir_ent.starthi) << 16 : 0))
 
 #define MODIFY(p,i,v)					\
   do {							\
@@ -78,132 +78,6 @@ static DOS_FILE *root;
 	    MODIFY(p,starthi,htole16((__v)>>16));			\
     }									\
   } while(0)
-
-off_t alloc_rootdir_entry(DOS_FS * fs, DIR_ENT * de, const char *pattern, int gen_name)
-{
-    static int curr_num = 0;
-    off_t offset;
-
-    if (fs->root_cluster) {
-	DIR_ENT d2;
-	int i = 0, got = 0;
-	uint32_t clu_num, prev = 0;
-	off_t offset2;
-
-	clu_num = fs->root_cluster;
-	offset = cluster_start(fs, clu_num);
-	while (clu_num > 0 && clu_num != -1) {
-	    fs_read(offset, sizeof(DIR_ENT), &d2);
-	    if (IS_FREE(d2.name) && d2.attr != VFAT_LN_ATTR) {
-		got = 1;
-		break;
-	    }
-	    i += sizeof(DIR_ENT);
-	    offset += sizeof(DIR_ENT);
-	    if ((i % fs->cluster_size) == 0) {
-		prev = clu_num;
-		if ((clu_num = next_cluster(fs, clu_num)) == 0 || clu_num == -1)
-		    break;
-		offset = cluster_start(fs, clu_num);
-	    }
-	}
-	if (!got) {
-	    /* no free slot, need to extend root dir: alloc next free cluster
-	     * after previous one */
-	    if (!prev)
-		die("Root directory has no cluster allocated!");
-	    for (clu_num = prev + 1; clu_num != prev; clu_num++) {
-		FAT_ENTRY entry;
-
-		if (clu_num >= fs->data_clusters + 2)
-		    clu_num = 2;
-		get_fat(&entry, fs->fat, clu_num, fs);
-		if (!entry.value)
-		    break;
-	    }
-	    if (clu_num == prev)
-		die("Root directory full and no free cluster");
-	    set_fat(fs, prev, clu_num);
-	    set_fat(fs, clu_num, -1);
-	    set_owner(fs, clu_num, get_owner(fs, fs->root_cluster));
-	    /* clear new cluster */
-	    memset(&d2, 0, sizeof(d2));
-	    offset = cluster_start(fs, clu_num);
-	    for (i = 0; i < fs->cluster_size; i += sizeof(DIR_ENT))
-		fs_write(offset + i, sizeof(d2), &d2);
-	}
-	memset(de, 0, sizeof(DIR_ENT));
-	if (gen_name) {
-	    while (1) {
-		char expanded[12];
-		sprintf(expanded, pattern, curr_num);
-		memcpy(de->name, expanded, MSDOS_NAME);
-		clu_num = fs->root_cluster;
-		i = 0;
-		offset2 = cluster_start(fs, clu_num);
-		while (clu_num > 0 && clu_num != -1) {
-		    fs_read(offset2, sizeof(DIR_ENT), &d2);
-		    if (offset2 != offset &&
-			!strncmp((const char *)d2.name, (const char *)de->name,
-				 MSDOS_NAME))
-			break;
-		    i += sizeof(DIR_ENT);
-		    offset2 += sizeof(DIR_ENT);
-		    if ((i % fs->cluster_size) == 0) {
-			if ((clu_num = next_cluster(fs, clu_num)) == 0 ||
-			    clu_num == -1)
-			    break;
-			offset2 = cluster_start(fs, clu_num);
-		    }
-		}
-		if (clu_num == 0 || clu_num == -1)
-		    break;
-		if (++curr_num >= 10000)
-		    die("Unable to create unique name");
-	    }
-	} else {
-	    memcpy(de->name, pattern, MSDOS_NAME);
-	}
-    } else {
-	DIR_ENT *root;
-	int next_free = 0, scan;
-
-	root = alloc(fs->root_entries * sizeof(DIR_ENT));
-	fs_read(fs->root_start, fs->root_entries * sizeof(DIR_ENT), root);
-
-	while (next_free < fs->root_entries)
-	    if (IS_FREE(root[next_free].name) &&
-		root[next_free].attr != VFAT_LN_ATTR)
-		break;
-	    else
-		next_free++;
-	if (next_free == fs->root_entries)
-	    die("Root directory is full.");
-	offset = fs->root_start + next_free * sizeof(DIR_ENT);
-	memset(de, 0, sizeof(DIR_ENT));
-	if (gen_name) {
-	    while (1) {
-		char expanded[12];
-		sprintf(expanded, pattern, curr_num);
-		memcpy(de->name, expanded, MSDOS_NAME);
-		for (scan = 0; scan < fs->root_entries; scan++)
-		    if (scan != next_free &&
-			!strncmp((const char *)root[scan].name,
-				 (const char *)de->name, MSDOS_NAME))
-			break;
-		if (scan == fs->root_entries)
-		    break;
-		if (++curr_num >= 10000)
-		    die("Unable to create unique name");
-	    }
-	} else {
-	    memcpy(de->name, pattern, MSDOS_NAME);
-	}
-	free(root);
-    }
-    ++n_files;
-    return offset;
-}
 
 /**
  * Construct a full path (starting with '/') for the specified dentry,
@@ -263,13 +137,14 @@ static char *file_stat(DOS_FILE * file)
 {
     static char temp[100];
     struct tm *tm;
-    char tmp[100];
+    char tmp[40];
     time_t date;
 
     date =
 	date_dos2unix(le16toh(file->dir_ent.time), le16toh(file->dir_ent.date));
     tm = localtime(&date);
-    strftime(tmp, 99, "%H:%M:%S %b %d %Y", tm);
+    if (!strftime(tmp, 40, "%H:%M:%S %b %d %Y", tm))
+	strcpy(tmp, "<internal format error>");
     sprintf(temp, "  Size %u bytes, date %s", le32toh(file->dir_ent.size), tmp);
     return temp;
 }
@@ -282,10 +157,8 @@ static int bad_name(DOS_FILE * file)
     const unsigned char *name = file->dir_ent.name;
     const unsigned char *ext = name + 8;
 
-    /* Do not complain about (and auto-correct) the extended attribute files
-     * of OS/2. */
-    if (strncmp((const char *)name, "EA DATA  SF", 11) == 0 ||
-	strncmp((const char *)name, "WP ROOT  SF", 11) == 0)
+    /* do not check synthetic FAT32 root entry */
+    if (!file->offset)
 	return 0;
 
     /* check if we have neither a long filename nor a short name */
@@ -299,7 +172,7 @@ static int bad_name(DOS_FILE * file)
 	return 0;
 
     for (i = 0; i < MSDOS_NAME; i++) {
-	if (name[i] < ' ' || name[i] == 0x7f)
+	if ((name[i] < ' ' && !(i == 0 && name[0] == 0x05)) || name[i] == 0x7f)
 	    return 1;
 	if (name[i] > 0x7f) {
 		/* german umlauts are fully legally under MS-DOS/GEMDOS */
@@ -310,24 +183,29 @@ static int bad_name(DOS_FILE * file)
 	    return 1;
     }
 
-    spc = 0;
-    for (i = 0; i < 8; i++) {
-	if (name[i] == ' ')
-	    spc = 1;
-	else if (spc)
-	    /* non-space after a space not allowed, space terminates the name
-	     * part */
-	    return 1;
-    }
+    if (name[0] == ' ')
+	return 1;
 
-    spc = 0;
-    for (i = 0; i < 3; i++) {
-	if (ext[i] == ' ')
-	    spc = 1;
-	else if (spc)
-	    /* non-space after a space not allowed, space terminates the ext
-	     * part */
-	    return 1;
+    if (no_spaces_in_sfns) {
+	spc = 0;
+	for (i = 0; i < 8; i++) {
+	    if (name[i] == ' ')
+		spc = 1;
+	    else if (spc)
+		/* non-space after a space not allowed, space terminates the name
+		 * part */
+		return 1;
+	}
+
+	spc = 0;
+	for (i = 0; i < 3; i++) {
+	    if (ext[i] == ' ')
+		spc = 1;
+	    else if (spc)
+		/* non-space after a space not allowed, space terminates the ext
+		 * part */
+		return 1;
+	}
     }
 
     /* Under GEMDOS, chars >= 128 are never allowed. */
@@ -393,8 +271,10 @@ static void auto_rename(DOS_FILE * file)
     DOS_FILE *first, *walk;
     uint32_t number;
 
-    if (!file->offset)
+    if (!file->offset) {
+	printf("Cannot rename FAT32 root dir\n");
 	return;			/* cannot rename FAT32 root dir */
+    }
     first = file->parent ? file->parent->first : root;
     number = 0;
     while (1) {
@@ -418,9 +298,10 @@ static void auto_rename(DOS_FILE * file)
 	    } else {
 		fs_write(file->offset, MSDOS_NAME, file->dir_ent.name);
 	    }
-	    if (file->lfn)
-		lfn_fix_checksum(file->lfn_offset, file->offset,
-				 (const char *)file->dir_ent.name);
+	    if (file->lfn) {
+		lfn_remove(file->lfn_offset, file->offset);
+		file->lfn = NULL;
+	    }
 	    return;
 	}
 	number++;
@@ -459,9 +340,10 @@ static void rename_file(DOS_FILE * file)
 		} else {
 		    fs_write(file->offset, MSDOS_NAME, file->dir_ent.name);
 		}
-		if (file->lfn)
-		    lfn_fix_checksum(file->lfn_offset, file->offset,
-				     (const char *)file->dir_ent.name);
+		if (file->lfn) {
+		    lfn_remove(file->lfn_offset, file->offset);
+		    file->lfn = NULL;
+		}
 		return;
 	    }
 	}
@@ -498,6 +380,13 @@ static int handle_dot(DOS_FS * fs, DOS_FILE * file, int dots)
 	    MODIFY(file, attr, file->dir_ent.attr | ATTR_DIR);
 	    break;
 	}
+    }
+    if (file->dir_ent.lcase & FAT_NO_83NAME) {
+	/* Some versions of mtools write these directory entries with random data in
+	   this field. */
+	printf("%s\n  Is a dot with no 8.3 name flag set, clearing.\n", path_name(file));
+	file->dir_ent.lcase &= ~FAT_NO_83NAME;
+	MODIFY(file, lcase, file->dir_ent.lcase);
     }
     if (!dots) {
 	printf("Root contains directory \"%s\". Dropping it.\n", name);
