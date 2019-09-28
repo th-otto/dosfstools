@@ -135,8 +135,8 @@ int main(int argc, char **argv)
 #ifdef __MINT__
 	    verify = 1;
 	    preen = 1;
-	    /* Fall thru */
 #endif
+	    /* fall through */
 	case 'a':
 	case 'y':
 	    rw = 1;

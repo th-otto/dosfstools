@@ -41,9 +41,9 @@ int __open_v(const char *_filename, int iomode, va_list argp);
 
 int __close(int fd);
 
-int __read(int fd, void *buf, size_t size);
+ssize_t __read(int fd, void *buf, size_t size);
 
-int __write(int fd, const void *buf, size_t size);
+ssize_t __write(int fd, const void *buf, size_t size);
 
 int __ioctl(int fd, int cmd, void *arg);
 
@@ -357,7 +357,7 @@ static long rwabs_xhdi(struct device *mydev, ushort rw, void *buf, ulong size, u
 # define min(a,b)	((a) > (b) ? (b) : (a))
 
 
-int read(int fd, void *buf, size_t size)
+ssize_t read(int fd, void *buf, size_t size)
 {
 	struct device *mydev = get_device(fd);
 
@@ -464,7 +464,7 @@ int read(int fd, void *buf, size_t size)
 	}
 }
 
-int write(int fd, const void *buf, size_t size)
+ssize_t write(int fd, const void *buf, size_t size)
 {
 	struct device *mydev = get_device(fd);
 
