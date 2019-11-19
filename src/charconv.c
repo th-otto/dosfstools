@@ -14,7 +14,6 @@ static int iconv_init_codepage(int codepage, iconv_t *to_local, iconv_t *from_lo
 {
     char codepage_name[32];
     snprintf(codepage_name, sizeof(codepage_name), "CP%d//TRANSLIT", codepage);
-    *to_local = iconv_open("ATARIST", codepage_name);
     *to_local = iconv_open(nl_langinfo(CODESET), codepage_name);
     if (*to_local == (iconv_t) - 1)
 	perror(codepage_name);
